@@ -1,0 +1,1 @@
+ALTER TABLE "User" ADD COLUMN "cursorColor" TEXT NOT NULL DEFAULT '#4f8cff';

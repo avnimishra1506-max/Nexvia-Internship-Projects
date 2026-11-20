@@ -1,0 +1,189 @@
+// prisma/schema.prisma
+// Real-time Collaborative Workspace (Notion / Figma style)
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Users ───────────────────────────────────────────────────────────────────
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  name        String
+  password    String?                      // bcrypt hash; optional for existing/passwordless accounts
+  avatar      String?  @map("avatarUrl")   // URL to profile picture
+  cursorColor String   @default("#6366f1") // Presence cursor colour
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sessions        Session[]
+  workspaces      WorkspaceMember[]
+  documents       Document[]           @relation("CreatedDocuments")
+  permissions     DocumentPermission[]
+  commentThreads  CommentThread[]
+  comments        Comment[]
+  snapshots       DocumentSnapshot[]
+
+  @@map("users")
+}
+
+// ─── Sessions (HTTP-only cookie auth) ────────────────────────────────────────
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique             // The raw cookie value
+  userId    String
+  expiresAt DateTime                     // Session expiry
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ─── Workspaces ───────────────────────────────────────────────────────────────
+model Workspace {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  icon        String?  @default("📁")
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members   WorkspaceMember[]
+  documents Document[]
+
+  @@map("workspaces")
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole @default(MEMBER)
+  joinedAt    DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+// ─── Documents (hierarchical, Notion-style) ───────────────────────────────────
+enum PermissionRole {
+  VIEW
+  COMMENT
+  EDIT
+}
+
+model Document {
+  id               String   @id @default(cuid())
+  title            String   @default("Untitled Document")
+  icon             String?  @default("📄")
+  coverImage       String?
+  content          String?  @db.Text
+  isArchived       Boolean  @default(false)
+  isPublished      Boolean  @default(false)
+
+  // Self-referencing parent-child tree
+  parentDocumentId String?
+  parentDocument   Document?  @relation("DocumentChildren", fields: [parentDocumentId], references: [id], onDelete: Cascade)
+  children         Document[] @relation("DocumentChildren")
+
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  createdById String
+  createdBy   User   @relation("CreatedDocuments", fields: [createdById], references: [id])
+
+  permissions    DocumentPermission[]
+  commentThreads CommentThread[]
+  snapshots      DocumentSnapshot[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+  @@index([parentDocumentId])
+  @@map("documents")
+}
+
+model DocumentPermission {
+  id         String         @id @default(cuid())
+  documentId String
+  userId     String
+  role       PermissionRole @default(EDIT)
+  createdAt  DateTime       @default(now())
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, userId])
+  @@map("document_permissions")
+}
+
+// ─── Comments ─────────────────────────────────────────────────────────────────
+model CommentThread {
+  id         String   @id @default(cuid())
+  documentId String
+  authorId   String
+  position   String?  // Block anchor or selection range
+  resolved   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  document Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  author   User      @relation(fields: [authorId], references: [id])
+  comments Comment[]
+
+  @@index([documentId])
+  @@map("comment_threads")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  threadId  String
+  authorId  String
+  content   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  thread CommentThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  author User          @relation(fields: [authorId], references: [id])
+
+  @@map("comments")
+}
+
+// ─── Version History (Yjs CRDT snapshots) ────────────────────────────────────
+model DocumentSnapshot {
+  id            String   @id @default(cuid())
+  documentId    String
+  versionNumber Int
+  title         String   @default("Auto-save Snapshot")
+  description   String?
+  stateVector   String?  @db.Text // Base64-encoded Yjs binary state
+  snapshotJson  String?  @db.Text // Human-readable editor JSON
+  createdById   String
+  createdAt     DateTime @default(now())
+
+  document  Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdBy User     @relation(fields: [createdById], references: [id])
+
+  @@index([documentId])
+  @@map("document_snapshots")
+}
